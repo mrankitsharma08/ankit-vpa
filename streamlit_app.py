@@ -7,7 +7,7 @@ import gc
 st.set_page_config(page_title="TPV PG Share Analyzer", layout="wide")
 
 st.title("📊 PG Share Analyzer (Cr)")
-st.info("Upload your January VPA data to see Merchant-wise PG distribution.")
+st.info("Upload your VPA data to see Merchant-wise PG distribution.")
 
 # 2. Sidebar for Controls
 with st.sidebar:
