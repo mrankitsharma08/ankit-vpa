@@ -3,18 +3,10 @@ import pandas as pd
 import plotly.express as px
 
 # UI Configuration
-st.set_page_config(page_title="TPV Analyzer Pro", layout="wide", initial_sidebar_state="expanded")
-
-# Custom CSS for a cleaner look
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_index=True)
+st.set_page_config(page_title="TPV Analyzer Pro", layout="wide")
 
 st.title("📊 TPV Market Share Analyzer")
-st.markdown("---")
+st.divider()
 
 # Sidebar for Setup & Inputs
 with st.sidebar:
@@ -22,15 +14,16 @@ with st.sidebar:
     uploaded_file = st.file_uploader("Upload Marketshare CSV", type="csv")
     
     st.header("2. Analysis Filters")
-    raw_input = st.text_input("Receiver Names", "Amazon, Flipkart, Myntra")
-    st.caption("Separate names with commas")
+    # Default values included for immediate feedback
+    raw_input = st.text_input("Receiver Names (comma separated)", "Amazon, Flipkart, Myntra")
 
 if uploaded_file is not None:
     try:
+        # Load and detect separator automatically
         df = pd.read_csv(uploaded_file, sep=None, engine='python')
         
         # Data Processing
-        receiver_list = [name.strip().lower() for name in raw_input.split(',')]
+        receiver_list = [name.strip().lower() for name in raw_input.split(',') if name.strip()]
         df['receiver_name_lower'] = df['receiver_name'].astype(str).str.lower()
         filtered_df = df[df['receiver_name_lower'].isin(receiver_list)].copy()
 
@@ -45,43 +38,39 @@ if uploaded_file is not None:
             pivot_tpv_cr = pivot_tpv_cr.sort_values(by='Grand Total (Cr)', ascending=False)
 
             # --- UI LAYOUT ---
-            
-            # Row 1: Metrics
-            col1, col2, col3 = st.columns(3)
+            # Metrics Row
             total_tpv = pivot_tpv_cr['Grand Total (Cr)'].sum()
-            col1.metric("Total TPV (Cr)", f"₹{total_tpv:,.2f}")
-            col2.metric("Active Receivers", len(pivot_tpv_cr))
-            col3.metric("Records Found", f"{len(filtered_df):,}")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total TPV (Cr)", f"₹{total_tpv:,.2f}")
+            m2.metric("Active Merchants", len(pivot_tpv_cr))
+            m3.metric("Records Found", f"{len(filtered_df):,}")
 
-            # Row 2: Visual & Table Split
-            tab1, tab2 = st.tabs(["📈 Data Visualization", "📋 Detailed Table"])
+            # Tabs for Viz and Data
+            tab1, tab2 = st.tabs(["📈 Chart View", "📋 Table View"])
             
             with tab1:
+                # Prepare data for Plotly
+                viz_df = pivot_tpv_cr.drop(columns='Grand Total (Cr)').reset_index()
+                viz_melted = viz_df.melt(id_vars='receiver_name', var_name='PG Name', value_name='TPV (Cr)')
+                
                 fig = px.bar(
-                    pivot_tpv_cr.drop(columns='Grand Total (Cr)'), 
-                    barmode="group",
-                    title="TPV Distribution by PG Name",
-                    labels={'value': 'Amount (Cr)', 'receiver_name': 'Merchant'},
-                    template="plotly_white"
+                    viz_melted, x='receiver_name', y='TPV (Cr)', color='PG Name',
+                    title="TPV Distribution by Payment Gateway",
+                    barmode="group", template="plotly_white"
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
             with tab2:
-                st.dataframe(
-                    pivot_tpv_cr.style.format("{:.2f}").background_gradient(cmap='Blues', subset=['Grand Total (Cr)']),
-                    use_container_width=True,
-                    height=400
-                )
+                st.dataframe(pivot_tpv_cr.style.format("{:.2f}"), use_container_width=True)
                 
             # Download Button
-            csv = pivot_tpv_cr.to_csv().encode('utf-8')
-            st.download_button("📥 Download Report as CSV", data=csv, file_name="tpv_report.csv", mime="text/csv")
+            csv_data = pivot_tpv_cr.to_csv().encode('utf-8')
+            st.download_button("📥 Download This Report", data=csv_data, file_name="tpv_report.csv")
 
         else:
-            st.warning("⚠️ No data matches the receiver names provided.")
+            st.warning("No data found for the names entered in the sidebar.")
             
     except Exception as e:
-        st.error(f"Error processing file: {e}")
+        st.error(f"Analysis Error: {e}")
 else:
-    # Landing State UI
-    st.info("👋 Welcome! Please upload your CSV file in the sidebar to generate the TPV report.")
+    st.info("Please upload your CSV file in the sidebar to start.")
