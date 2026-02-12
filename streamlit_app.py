@@ -108,4 +108,4 @@ if uploaded_file:
         st.error(f"⚠️ **Debug Info:** {e}")
         st.info("Ensure your CSV isn't open in another program and headers are clean.")
 else:
-    st.info("👋 Upload your January VPA CSV in the sidebar to start.")
+    st.info("👋 Upload your VPA CSV in the sidebar to start.")
