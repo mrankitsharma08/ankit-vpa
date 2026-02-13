@@ -122,8 +122,7 @@ if uploaded_file:
                     # Styling: Formatting decimals and highlighting the Total row
                     styled_df = pivot_cr.style.format("{:.2f}").highlight_max(
                         axis=0, 
-                        subset=pd.IndexSlice[total_row_label, :], 
-                        color="#2e7d32"
+                        subset=pd.IndexSlice[total_row_label, :]
                     )
                     
                     st.dataframe(styled_df, use_container_width=True)
