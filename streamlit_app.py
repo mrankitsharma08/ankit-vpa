@@ -15,14 +15,12 @@ with st.sidebar:
     
     st.divider()
     st.header("2. Search Filters")
-    # This now searches across both Merchant Name and VPA (if selected)
     search_input = st.text_area("Enter Receiver Names or VPAs", 
                                   placeholder="Amazon, merchant@upi, Flipkart",
                                   help="Enter names or specific VPA IDs separated by commas or new lines.")
     
     st.divider()
     st.header("3. Drilldown Options")
-    # The Toggle Button for VPA Level Analysis
     include_vpa = st.toggle("Include VPA in Report", value=False)
     
     st.divider()
@@ -52,7 +50,6 @@ if uploaded_file:
             tpv_col = st.selectbox("TPV Column:", all_columns,
                                    index=all_columns.index('tpv') if 'tpv' in all_columns else 0)
             
-        # Optional VPA column selection
         sel_vpa = None
         if include_vpa:
             with cols[3]:
@@ -77,9 +74,10 @@ if uploaded_file:
                     rename_map[sel_vpa] = 'vpa_id'
                 df.rename(columns=rename_map, inplace=True)
                 
+                # Clean TPV data
                 df['tpv'] = pd.to_numeric(df['tpv'], errors='coerce').fillna(0)
                 
-                # Step 3: Global Filtering (Checks both Receiver and VPA)
+                # Step 3: Global Filtering
                 targets = [t.strip().lower() for t in search_input.replace('\n', ',').split(',') if t.strip()]
                 
                 if targets:
@@ -103,15 +101,32 @@ if uploaded_file:
                         fill_value=0
                     )
                     
-                    # Formatting
+                    # Formatting to Crores
                     pivot_cr = pivot / 10_000_000
+                    
+                    # A. Add Horizontal Grand Total (Sum across PGs for each merchant)
                     pivot_cr['Grand Total (Cr)'] = pivot_cr.sum(axis=1)
+                    
+                    # B. Sort by Grand Total before adding the Vertical Total
                     pivot_cr = pivot_cr.sort_values(by='Grand Total (Cr)', ascending=False)
+
+                    # C. Add Vertical Grand Total (Sum of all rows)
+                    # We use a tuple for the index if it's a MultiIndex (Merchant + VPA)
+                    total_row_label = ("TOTAL", "") if include_vpa else "TOTAL"
+                    pivot_cr.loc[total_row_label, :] = pivot_cr.sum(axis=0)
 
                     # UI Display
                     st.divider()
                     st.success(f"Matched {len(filtered_df):,} records.")
-                    st.dataframe(pivot_cr.style.format("{:.2f}"), use_container_width=True)
+                    
+                    # Styling: Formatting decimals and highlighting the Total row
+                    styled_df = pivot_cr.style.format("{:.2f}").highlight_max(
+                        axis=0, 
+                        subset=pd.IndexSlice[total_row_label, :], 
+                        color="#2e7d32"
+                    )
+                    
+                    st.dataframe(styled_df, use_container_width=True)
                     
                     st.download_button("📥 Download Report", 
                                        pivot_cr.to_csv().encode('utf-8'), 
