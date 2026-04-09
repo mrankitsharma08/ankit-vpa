@@ -1,4 +1,4 @@
 [server]
-maxUploadSize = 1024
-enableCORS = false
-enableXsrfProtection = false
+maxUploadSize = 2000
+# Increase timeout for slow Google Drive downloads
+maxMessageSize = 2000
