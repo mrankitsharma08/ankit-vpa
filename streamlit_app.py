@@ -1,184 +1,104 @@
 import streamlit as st
 import pandas as pd
-import gc
-import re
+import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 
-# --- 1. FUNCTIONS ---
+# Set page layout
+st.set_page_config(page_title="Churn & Retention Dashboard", layout="wide")
 
-def get_gdrive_download_url(url):
-    """
-    Converts a standard Google Drive sharing link into a direct download link.
-    """
-    if "drive.google.com" not in url:
-        return url
+@st.cache_data
+def load_data(file):
+    df = pd.read_csv(file)
+    # Attempt to convert date columns automatically
+    for col in df.columns:
+        if 'date' in col.lower() or 'month' in col.lower():
+            try:
+                df[col] = pd.to_datetime(df[col])
+            except:
+                pass
+    return df
+
+def generate_cohort_table(df, id_col, date_col):
+    """Generates a standard Cohort Retention/Churn table."""
+    # Create Cohort (First purchase month)
+    df['OrderMonth'] = df[date_col].dt.to_period('M')
+    df['Cohort'] = df.groupby(id_col)[date_col].transform('min').dt.to_period('M')
     
-    file_id_match = re.search(r'd/([a-zA-Z0-9-_]+)', url)
-    if file_id_match:
-        file_id = file_id_match.group(1)
-        return f'https://drive.google.com/uc?export=download&id={file_id}'
-    return url
-
-# --- 2. PAGE CONFIG ---
-st.set_page_config(page_title="VPA TPV Analyzer", layout="wide")
-
-st.title("📊 VPA TPV Analysis Dashboard")
-st.markdown("---")
-
-# --- 3. SIDEBAR: INPUTS & MEMORY ---
-with st.sidebar:
-    st.header("1. Data Center")
+    # Calculate periods between purchases
+    df_cohort = df.groupby(['Cohort', 'OrderMonth']).agg(n_customers=(id_col, 'nunique')).reset_index()
+    df_cohort['period_number'] = (df_cohort.OrderMonth - df_cohort.Cohort).apply(lambda r: r.n)
     
-    data_source = st.radio("Select Data Source:", ["Local CSV", "Google Drive Link"])
+    # Pivot for the matrix
+    cohort_pivot = df_cohort.pivot_table(index='Cohort', columns='period_number', values='n_customers')
     
-    uploaded_file = None
-    gdrive_url = None
+    # Convert to percentages (Retention Rate)
+    cohort_size = cohort_pivot.iloc[:, 0]
+    retention_matrix = cohort_pivot.divide(cohort_size, axis=0)
+    return retention_matrix
 
-    if data_source == "Local CSV":
-        uploaded_file = st.file_uploader("Upload Marketshare CSV", type="csv")
-    else:
-        gdrive_url = st.text_input("Paste Google Drive Link:", 
-                                  placeholder="https://drive.google.com/file/d/...")
-        st.caption("⚠️ Ensure 'Anyone with the link' is enabled on Google Drive.")
+def main():
+    st.title("📊 Customer Churn Dashboard")
     
-    st.divider()
-    st.header("2. Search Filters")
-    search_input = st.text_area("Enter Receiver Names or VPAs", 
-                                  placeholder="Amazon, merchant@upi, Flipkart",
-                                  help="Enter names or specific VPA IDs separated by commas or new lines.")
+    # 1. Upload Section
+    uploaded_file = st.sidebar.file_uploader("Upload your CSV Base Data", type=['csv'])
     
-    st.divider()
-    st.header("3. Drilldown Options")
-    include_vpa = st.toggle("Include VPA in Report", value=False)
-    
-    st.divider()
-    if st.button("🧹 Reset App Memory"):
-        st.cache_data.clear()
-        st.success("Cache cleared!")
-        st.rerun()
-
-# --- 4. DATA PROCESSING LOGIC ---
-
-# Determine the source path
-active_source = uploaded_file if data_source == "Local CSV" else gdrive_url
-
-if active_source:
-    try:
-        # Convert link if necessary
-        file_path = active_source
-        if data_source == "Google Drive Link":
-            file_path = get_gdrive_download_url(gdrive_url)
-
-        # Step 1: Detect Headers (Fast read)
-        # Using a small chunk to get column names without loading the file
-        df_header = pd.read_csv(file_path, nrows=2)
-        all_columns = [str(c).strip() for c in df_header.columns]
-
-        st.subheader("🛠️ Step 1: Column Mapping")
-        cols = st.columns(3 if not include_vpa else 4)
+    if uploaded_file is not None:
+        df = load_data(uploaded_file)
         
-        with cols[0]:
-            sel_receiver = st.selectbox("Receiver Name Column:", all_columns, 
-                                        index=all_columns.index('receiver_name') if 'receiver_name' in all_columns else 0)
-        with cols[1]:
-            sel_pg = st.selectbox("PG Name Column:", all_columns,
-                                  index=all_columns.index('pg_name') if 'pg_name' in all_columns else 0)
-        with cols[2]:
-            tpv_col = st.selectbox("TPV Column:", all_columns,
-                                   index=all_columns.index('tpv') if 'tpv' in all_columns else 0)
+        # 2. Sidebar Filters
+        st.sidebar.header("Filter Data")
+        # Let user pick the ID and Date columns if not auto-detected
+        id_col = st.sidebar.selectbox("Select Customer ID Column", df.columns)
+        date_col = st.sidebar.selectbox("Select Transaction Date Column", df.columns)
+        
+        # Dynamic Category Filters (for columns with low cardinality)
+        cat_cols = [col for col in df.columns if df[col].nunique() < 20 and col not in [id_col, date_col]]
+        for col in cat_cols:
+            options = ["All"] + list(df[col].unique())
+            selection = st.sidebar.selectbox(f"Filter by {col}", options)
+            if selection != "All":
+                df = df[df[col] == selection]
+
+        # 3. Key Metrics
+        total_cust = df[id_col].nunique()
+        total_rev = df['Revenue'].sum() if 'Revenue' in df.columns else "N/A"
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Unique Customers", f"{total_cust:,}")
+        m2.metric("Total Rows", f"{len(df):,}")
+        m3.metric("Total Value", f"{total_rev}")
+
+        # 4. Churn / Retention Table
+        st.subheader("Retention Matrix (Cohort Analysis)")
+        try:
+            retention = generate_cohort_table(df, id_col, date_col)
             
-        sel_vpa = None
-        if include_vpa:
-            with cols[3]:
-                sel_vpa = st.selectbox("VPA ID Column:", all_columns,
-                                       index=all_columns.index('vpa') if 'vpa' in all_columns else 0)
+            # Plotting the Heatmap
+            fig, ax = plt.subplots(figsize=(12, 8))
+            sns.heatmap(retention, annot=True, fmt=".0%", cmap="YlGnBu", ax=ax)
+            plt.title("Retention Rate by Cohort")
+            st.pyplot(fig)
+            
+            # Show the inverse (Churn)
+            if st.checkbox("Show as Churn Rate (1 - Retention)"):
+                churn_matrix = 1 - retention
+                st.dataframe(churn_matrix.style.format("{:.1%}").background_gradient(cmap='Reds'))
+            else:
+                st.dataframe(retention.style.format("{:.1%}"))
+                
+        except Exception as e:
+            st.error(f"Could not generate cohort table. Ensure your date column is valid. Error: {e}")
 
-        # STEP 2: Process Button
-        if st.button("🚀 Generate Merchant & VPA Report"):
-            with st.spinner("Streaming data from source..."):
-                
-                # Load only required columns and use memory-efficient types
-                load_cols = [sel_receiver, sel_pg, tpv_col]
-                if include_vpa and sel_vpa:
-                    load_cols.append(sel_vpa)
-                
-                # Reading with memory optimizations
-                # engine='c' is faster; low_memory=True prevents RAM spikes
-                df = pd.read_csv(file_path, usecols=load_cols, engine='c', low_memory=True)
-                
-                # Standardize column names
-                rename_map = {sel_receiver: 'receiver_name', sel_pg: 'pg_name', tpv_col: 'tpv'}
-                if include_vpa:
-                    rename_map[sel_vpa] = 'vpa_id'
-                df.rename(columns=rename_map, inplace=True)
-                
-                # Clean TPV data
-                df['tpv'] = pd.to_numeric(df['tpv'], errors='coerce').fillna(0)
-                
-                # Step 3: Global Filtering
-                targets = [t.strip().lower() for t in search_input.replace('\n', ',').split(',') if t.strip()]
-                
-                if targets:
-                    mask = df['receiver_name'].astype(str).str.lower().isin(targets)
-                    if include_vpa:
-                        mask = mask | df['vpa_id'].astype(str).str.lower().isin(targets)
-                    filtered_df = df[mask].copy()
-                else:
-                    filtered_df = df.copy()
+        # 5. Trend Analysis
+        st.subheader("Customer Growth Trend")
+        df['Month'] = df[date_col].dt.to_period('M').astype(str)
+        trend = df.groupby('Month')[id_col].nunique().reset_index()
+        fig_trend = px.line(trend, x='Month', y=id_col, title="Monthly Active Customers")
+        st.plotly_chart(fig_trend, use_container_width=True)
 
-                # Cleanup original df to free RAM immediately
-                del df
-                gc.collect()
+    else:
+        st.info("Please upload a CSV file to begin.")
 
-                if not filtered_df.empty:
-                    # Step 4: Pivot Logic
-                    pivot_idx = ['receiver_name', 'vpa_id'] if include_vpa else 'receiver_name'
-                    
-                    pivot = pd.pivot_table(
-                        filtered_df, 
-                        values='tpv', 
-                        index=pivot_idx, 
-                        columns='pg_name', 
-                        aggfunc='sum', 
-                        fill_value=0
-                    )
-                    
-                    # Formatting to Crores
-                    pivot_cr = pivot / 10_000_000
-                    
-                    # A. Add Horizontal Grand Total
-                    pivot_cr['Grand Total (Cr)'] = pivot_cr.sum(axis=1)
-                    
-                    # B. Sort by Grand Total
-                    pivot_cr = pivot_cr.sort_values(by='Grand Total (Cr)', ascending=False)
-
-                    # C. Add Vertical Grand Total
-                    total_row_label = ("TOTAL", "") if include_vpa else "TOTAL"
-                    pivot_cr.loc[total_row_label, :] = pivot_cr.sum(axis=0)
-
-                    # UI Display
-                    st.divider()
-                    st.success(f"Successfully processed {len(filtered_df):,} matching records.")
-                    
-                    # Styling: Formatting decimals
-                    styled_df = pivot_cr.style.format("{:.2f}").highlight_max(
-                        axis=0, 
-                        subset=pd.IndexSlice[total_row_label, :]
-                    )
-                    
-                    st.dataframe(styled_df, use_container_width=True)
-                    
-                    # Prepare download
-                    csv_data = pivot_cr.to_csv().encode('utf-8')
-                    st.download_button("📥 Download Report", csv_data, "vpa_analysis_report.csv")
-                else:
-                    st.warning("No data matches your search criteria.")
-                
-                # Final memory cleanup
-                del filtered_df
-                gc.collect()
-
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
-        st.info("Check if your Google Drive link is public and if the column names are correct.")
-else:
-    st.info("👋 Provide a Google Drive link or upload a CSV in the sidebar to begin.")
+if __name__ == "__main__":
+    main()
