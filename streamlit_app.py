@@ -2,27 +2,28 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Set page to wide mode
+# 1. INCREASE PANDAS STYLER LIMIT
+# Setting this to match your cell count (approx 5.4 million)
+pd.set_option("styler.render.max_elements", 6000000)
+
 st.set_page_config(page_title="Instant Churn Dashboard", layout="wide")
 
 def main():
-    st.title("📊 Churn & Repeat Rate Dashboard")
+    st.title("📊 Churn & Repeat Rate Analysis")
 
     uploaded_file = st.sidebar.file_uploader("Upload CSV Data", type=['csv'])
 
     if uploaded_file:
         try:
-            # 1. Load Data
+            # Load Data
             df = pd.read_csv(uploaded_file)
-            df.columns = df.columns.str.strip() # Remove hidden spaces
+            df.columns = df.columns.str.strip()
 
-            # 2. Map Columns based on your description
-            # A = ID, B-I = Filters, J onwards = Data
             id_col = df.columns[0]
             filter_cols = df.columns[1:9].tolist() 
             data_cols = df.columns[9:].tolist()
 
-            # 3. Sidebar Filters
+            # Sidebar Filters
             st.sidebar.header("Data Filters")
             filtered_df = df.copy()
             
@@ -32,40 +33,38 @@ def main():
                 if selection != "All":
                     filtered_df = filtered_df[filtered_df[col].astype(str) == selection]
 
-            # 4. KPI Metrics
+            # KPI Metrics
             m1, m2 = st.columns(2)
             m1.metric("Selected Merchants", f"{filtered_df[id_col].nunique():,}")
             
-            # Safe calculation for the latest month
             try:
                 latest_val = pd.to_numeric(filtered_df[data_cols[-1]], errors='coerce').sum()
                 m2.metric("Latest Month Activity", f"{latest_val:,.0f}")
             except:
                 m2.metric("Latest Month Activity", "N/A")
 
-            # 5. Display the Table (FIXED PORTION)
+            # 5. Display the Table
             st.subheader("Churn / Repeat Rate Table")
             
-            # Select the data columns and set ID as index
+            # Optimization: If the dataset is still too large, we show the top 1000 
+            # or allow the user to see the full filtered set.
             display_table = filtered_df[[id_col] + data_cols].set_index(id_col)
 
-            # STYLER FIX: We only format numeric columns to avoid the StreamlitAPIException
+            # SAFE FORMATTER
             def safe_format(styler):
-                # Identify columns that are numeric (float/int)
                 numeric_cols = display_table.select_dtypes(include=['number']).columns
-                
-                # Apply percentage format ONLY to numbers between -1 and 2 (typical for churn %)
-                # Apply gradient background
                 return styler.background_gradient(cmap='YlGnBu', axis=None).format(
                     "{:.1%}", subset=numeric_cols, na_rep="0%"
                 )
 
-            # Render the styled dataframe
+            # Check if filtered data is still massive to warn user
+            if filtered_df.size > 5000000:
+                st.warning("⚠️ Large dataset detected. Rendering may take a few seconds.")
+
             st.dataframe(safe_format(display_table.style), use_container_width=True)
 
             # 6. Trend Visualization
             st.subheader("Overall Performance Trend")
-            # Convert data columns to numeric for the sum calculation
             numeric_data = filtered_df[data_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
             trend_values = numeric_data.sum().reset_index()
             trend_values.columns = ['Month', 'Value']
@@ -74,11 +73,9 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
-            st.error(f"Error reading file structure: {e}")
-            st.info("Check if Column A is ID and B-I are your 8 filters.")
-
+            st.error(f"Error: {e}")
     else:
-        st.info("Please upload your base data CSV in the sidebar.")
+        st.info("Please upload your base data CSV.")
 
 if __name__ == "__main__":
     main()
