@@ -4,101 +4,98 @@ import plotly.express as px
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-# Set page layout
-st.set_page_config(page_title="Churn & Retention Dashboard", layout="wide")
+st.set_page_config(page_title="Repeat Rate Dashboard", layout="wide")
 
 @st.cache_data
-def load_data(file):
+def process_data(file):
     df = pd.read_csv(file)
-    # Attempt to convert date columns automatically
-    for col in df.columns:
-        if 'date' in col.lower() or 'month' in col.lower():
-            try:
-                df[col] = pd.to_datetime(df[col])
-            except:
-                pass
-    return df
+    
+    # 1. Identify Filter Columns (B to I - assuming these are the first 7-9 columns)
+    # Based on your list: Business Category, Super Category, PG & PL, Deactivated, Platform, Blocked
+    filter_columns = [
+        'Business Category', 'Business Super Category', 'PG & PL', 
+        'Deactivated Segmant', 'Platform / Reseller', 'Blocked'
+    ]
+    
+    # Identify TPV columns (The rest of the columns)
+    # We assume 'Customer ID' or similar is column A (index 0)
+    all_cols = df.columns.tolist()
+    tpv_columns = [c for c in all_cols if c not in filter_columns and c != all_cols[0]]
+    id_col = all_cols[0] 
 
-def generate_cohort_table(df, id_col, date_col):
-    """Generates a standard Cohort Retention/Churn table."""
-    # Create Cohort (First purchase month)
-    df['OrderMonth'] = df[date_col].dt.to_period('M')
-    df['Cohort'] = df.groupby(id_col)[date_col].transform('min').dt.to_period('M')
+    # 2. Melt the data (Wide to Long)
+    # This turns months from columns into rows so we can calculate churn
+    df_long = df.melt(
+        id_vars=[id_col] + filter_columns,
+        value_vars=tpv_columns,
+        var_name='Month',
+        value_name='TPV'
+    )
     
-    # Calculate periods between purchases
-    df_cohort = df.groupby(['Cohort', 'OrderMonth']).agg(n_customers=(id_col, 'nunique')).reset_index()
-    df_cohort['period_number'] = (df_cohort.OrderMonth - df_cohort.Cohort).apply(lambda r: r.n)
+    # Clean TPV and Dates
+    df_long['TPV'] = pd.to_numeric(df_long['TPV'], errors='coerce').fillna(0)
+    df_long['Month'] = pd.to_datetime(df_long['Month'], errors='ignore')
     
-    # Pivot for the matrix
-    cohort_pivot = df_cohort.pivot_table(index='Cohort', columns='period_number', values='n_customers')
-    
-    # Convert to percentages (Retention Rate)
-    cohort_size = cohort_pivot.iloc[:, 0]
-    retention_matrix = cohort_pivot.divide(cohort_size, axis=0)
-    return retention_matrix
+    return df_long, filter_columns, id_col
 
 def main():
-    st.title("📊 Customer Churn Dashboard")
+    st.title("📊 Churn & Repeat Rate Analysis")
     
-    # 1. Upload Section
-    uploaded_file = st.sidebar.file_uploader("Upload your CSV Base Data", type=['csv'])
+    uploaded_file = st.sidebar.file_uploader("Upload Base Data CSV", type=['csv'])
     
-    if uploaded_file is not None:
-        df = load_data(uploaded_file)
+    if uploaded_file:
+        df, filters, id_col = process_data(uploaded_file)
         
-        # 2. Sidebar Filters
-        st.sidebar.header("Filter Data")
-        # Let user pick the ID and Date columns if not auto-detected
-        id_col = st.sidebar.selectbox("Select Customer ID Column", df.columns)
-        date_col = st.sidebar.selectbox("Select Transaction Date Column", df.columns)
+        # --- SIDEBAR FILTERS ---
+        st.sidebar.header("Dashboard Filters")
+        filtered_df = df.copy()
         
-        # Dynamic Category Filters (for columns with low cardinality)
-        cat_cols = [col for col in df.columns if df[col].nunique() < 20 and col not in [id_col, date_col]]
-        for col in cat_cols:
-            options = ["All"] + list(df[col].unique())
-            selection = st.sidebar.selectbox(f"Filter by {col}", options)
-            if selection != "All":
-                df = df[df[col] == selection]
+        for col in filters:
+            if col in df.columns:
+                options = ["All"] + sorted(list(df[col].unique().astype(str)))
+                selection = st.sidebar.selectbox(f"{col}", options)
+                if selection != "All":
+                    filtered_df = filtered_df[filtered_df[col] == selection]
 
-        # 3. Key Metrics
-        total_cust = df[id_col].nunique()
-        total_rev = df['Revenue'].sum() if 'Revenue' in df.columns else "N/A"
+        # --- CHURN CALCULATION ---
+        # A user is "Active" if TPV > 0
+        active_users = filtered_df[filtered_df['TPV'] > 0]
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Unique Customers", f"{total_cust:,}")
-        m2.metric("Total Rows", f"{len(df):,}")
-        m3.metric("Total Value", f"{total_rev}")
+        # Create Cohorts (Month of first TPV > 0)
+        active_users['Cohort'] = active_users.groupby(id_col)['Month'].transform('min')
+        
+        # Calculate Retention
+        cohort_data = active_users.groupby(['Cohort', 'Month']).agg(users=(id_col, 'nunique')).reset_index()
+        # Convert months to strings for better pivoting
+        cohort_data['Cohort_Str'] = cohort_data['Cohort'].dt.strftime('%Y-%m')
+        cohort_data['Month_Str'] = cohort_data['Month'].dt.strftime('%Y-%m')
+        
+        # Calculate period number (0 = Month of joining, 1 = Next month...)
+        cohort_data['Period'] = ((cohort_data['Month'].dt.year - cohort_data['Cohort'].dt.year) * 12 + 
+                                 (cohort_data['Month'].dt.month - cohort_data['Cohort'].dt.month))
 
-        # 4. Churn / Retention Table
-        st.subheader("Retention Matrix (Cohort Analysis)")
-        try:
-            retention = generate_cohort_table(df, id_col, date_col)
-            
-            # Plotting the Heatmap
-            fig, ax = plt.subplots(figsize=(12, 8))
-            sns.heatmap(retention, annot=True, fmt=".0%", cmap="YlGnBu", ax=ax)
-            plt.title("Retention Rate by Cohort")
+        retention_pivot = cohort_data.pivot_table(index='Cohort_Str', columns='Period', values='users')
+        retention_rate = retention_pivot.divide(retention_pivot.iloc[:, 0], axis=0)
+
+        # --- VISUALIZATION ---
+        m1, m2 = st.columns([2, 1])
+        
+        with m1:
+            st.subheader("Retention Heatmap (%)")
+            fig, ax = plt.subplots(figsize=(10, 6))
+            sns.heatmap(retention_rate, annot=True, fmt=".0%", cmap="YlGnBu", ax=ax)
             st.pyplot(fig)
-            
-            # Show the inverse (Churn)
-            if st.checkbox("Show as Churn Rate (1 - Retention)"):
-                churn_matrix = 1 - retention
-                st.dataframe(churn_matrix.style.format("{:.1%}").background_gradient(cmap='Reds'))
-            else:
-                st.dataframe(retention.style.format("{:.1%}"))
-                
-        except Exception as e:
-            st.error(f"Could not generate cohort table. Ensure your date column is valid. Error: {e}")
 
-        # 5. Trend Analysis
-        st.subheader("Customer Growth Trend")
-        df['Month'] = df[date_col].dt.to_period('M').astype(str)
-        trend = df.groupby('Month')[id_col].nunique().reset_index()
-        fig_trend = px.line(trend, x='Month', y=id_col, title="Monthly Active Customers")
-        st.plotly_chart(fig_trend, use_container_width=True)
+        with m2:
+            st.subheader("Churn Table")
+            churn_rate = 1 - retention_rate
+            st.dataframe(churn_rate.style.format("{:.1%").background_gradient(cmap='Reds'))
 
-    else:
-        st.info("Please upload a CSV file to begin.")
+        # --- TPV ANALYSIS ---
+        st.subheader("TPV Trend by Filtered Segment")
+        tpv_trend = filtered_df.groupby('Month')['TPV'].sum().reset_index()
+        fig_tpv = px.area(tpv_trend, x='Month', y='TPV', title="Total TPV Over Time")
+        st.plotly_chart(fig_tpv, use_container_width=True)
 
 if __name__ == "__main__":
     main()
