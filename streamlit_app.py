@@ -1,81 +1,101 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 
-# 1. INCREASE PANDAS STYLER LIMIT
-# Setting this to match your cell count (approx 5.4 million)
-pd.set_option("styler.render.max_elements", 6000000)
+st.set_page_config(layout="wide", page_title="Excel-like Data Analyzer")
+st.title("📊 VPA Data Analyzer")
 
-st.set_page_config(page_title="Instant Churn Dashboard", layout="wide")
+# 1. File Uploader
+uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=["csv", "xlsx"])
 
-def main():
-    st.title("📊 Churn & Repeat Rate Analysis")
-
-    uploaded_file = st.sidebar.file_uploader("Upload CSV Data", type=['csv'])
-
-    if uploaded_file:
-        try:
-            # Load Data
+if uploaded_file is not None:
+    try:
+        # Automatically detect format type and read headers dynamically
+        if uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file)
-            df.columns = df.columns.str.strip()
-
-            id_col = df.columns[0]
-            filter_cols = df.columns[1:9].tolist() 
-            data_cols = df.columns[9:].tolist()
-
-            # Sidebar Filters
-            st.sidebar.header("Data Filters")
+        else:
+            df = pd.read_excel(uploaded_file)
+            
+        st.success("File uploaded successfully!")
+        
+        # Grid/Tabs Layout
+        tab1, tab2 = st.tabs(["🔍 Data Viewer & Advanced Filters", "🧮 Pivot Table Builder"])
+        
+        with tab1:
+            st.subheader("Filter and Search Data")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                filter_col = st.selectbox("Select column to filter by", options=["None"] + list(df.columns))
+            
             filtered_df = df.copy()
             
-            for col in filter_cols:
-                options = ["All"] + sorted(df[col].unique().astype(str).tolist())
-                selection = st.sidebar.selectbox(f"{col}", options)
-                if selection != "All":
-                    filtered_df = filtered_df[filtered_df[col].astype(str) == selection]
+            if filter_col != "None":
+                is_numeric = pd.api.types.is_numeric_dtype(df[filter_col])
+                
+                if is_numeric:
+                    with col2:
+                        condition = st.selectbox("Condition", ["Equal to", "Greater than", "Less than", "Between"])
+                    with col3:
+                        if condition == "Between":
+                            min_val = float(df[filter_col].min())
+                            max_val = float(df[filter_col].max())
+                            val = st.slider("Select Range", min_val, max_val, (min_val, max_val))
+                            filtered_df = df[(df[filter_col] >= val[0]) & (df[filter_col] <= val[1])]
+                        else:
+                            val = st.number_input("Enter value", value=float(df[filter_col].mean()))
+                            if condition == "Equal to": filtered_df = df[df[filter_col] == val]
+                            elif condition == "Greater than": filtered_df = df[df[filter_col] > val]
+                            elif condition == "Less than": filtered_df = df[df[filter_col] < val]
+                else:
+                    with col2:
+                        condition = st.selectbox("Condition", ["Contains", "Equals", "Begins with", "Ends with"])
+                    with col3:
+                        search_text = st.text_input("Search text").strip()
+                        
+                    if search_text:
+                        if condition == "Contains":
+                            filtered_df = df[df[filter_col].astype(str).str.contains(search_text, case=False, na=False)]
+                        elif condition == "Equals":
+                            filtered_df = df[df[filter_col].astype(str).str.lower() == search_text.lower()]
+                        elif condition == "Begins with":
+                            filtered_df = df[df[filter_col].astype(str).str.lower().str.startswith(search_text.lower(), na=False)]
+                        elif condition == "Ends with":
+                            filtered_df = df[df[filter_col].astype(str).str.lower().str.endswith(search_text.lower(), na=False)]
 
-            # KPI Metrics
-            m1, m2 = st.columns(2)
-            m1.metric("Selected Merchants", f"{filtered_df[id_col].nunique():,}")
+            st.metric(label="Rows Found", value=len(filtered_df))
+            st.dataframe(filtered_df, use_container_width=True)
             
-            try:
-                latest_val = pd.to_numeric(filtered_df[data_cols[-1]], errors='coerce').sum()
-                m2.metric("Latest Month Activity", f"{latest_val:,.0f}")
-            except:
-                m2.metric("Latest Month Activity", "N/A")
-
-            # 5. Display the Table
-            st.subheader("Churn / Repeat Rate Table")
+        with tab2:
+            st.subheader("Create a Pivot Table")
+            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
             
-            # Optimization: If the dataset is still too large, we show the top 1000 
-            # or allow the user to see the full filtered set.
-            display_table = filtered_df[[id_col] + data_cols].set_index(id_col)
-
-            # SAFE FORMATTER
-            def safe_format(styler):
-                numeric_cols = display_table.select_dtypes(include=['number']).columns
-                return styler.background_gradient(cmap='YlGnBu', axis=None).format(
-                    "{:.1%}", subset=numeric_cols, na_rep="0%"
-                )
-
-            # Check if filtered data is still massive to warn user
-            if filtered_df.size > 5000000:
-                st.warning("⚠️ Large dataset detected. Rendering may take a few seconds.")
-
-            st.dataframe(safe_format(display_table.style), use_container_width=True)
-
-            # 6. Trend Visualization
-            st.subheader("Overall Performance Trend")
-            numeric_data = filtered_df[data_cols].apply(pd.to_numeric, errors='coerce').fillna(0)
-            trend_values = numeric_data.sum().reset_index()
-            trend_values.columns = ['Month', 'Value']
-            
-            fig = px.line(trend_values, x='Month', y='Value', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-
-        except Exception as e:
-            st.error(f"Error: {e}")
-    else:
-        st.info("Please upload your base data CSV.")
-
-if __name__ == "__main__":
-    main()
+            with p_col1:
+                pivot_index = st.multiselect("Rows (Index)", options=df.columns)
+            with p_col2:
+                pivot_columns = st.multiselect("Columns", options=df.columns)
+            with p_col3:
+                num_cols = df.select_dtypes(include=['number']).columns.tolist()
+                pivot_values = st.multiselect("Values (Numeric only)", options=num_cols)
+            with p_col4:
+                agg_func = st.selectbox("Aggregation Function", ["sum", "mean", "count", "min", "max"])
+                
+            if pivot_index and pivot_values:
+                try:
+                    pivot_table = df.pivot_table(
+                        index=pivot_index,
+                        columns=pivot_columns if pivot_columns else None,
+                        values=pivot_values,
+                        aggfunc=agg_func,
+                        fill_value=0
+                    )
+                    st.markdown("### 📋 Resulting Pivot Table")
+                    st.dataframe(pivot_table, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Could not generate pivot table: {e}")
+            else:
+                st.info("To build a pivot table, please select at least one **Row** and one **Value** column.")
+                
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+else:
+    st.info("Please upload a CSV or Excel file to get started.")
